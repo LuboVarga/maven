@@ -62,6 +62,8 @@ import org.apache.maven.model.superpom.SuperPomProvider;
 import org.apache.maven.model.validation.ModelValidator;
 import org.codehaus.plexus.component.annotations.Component;
 import org.codehaus.plexus.component.annotations.Requirement;
+import org.codehaus.plexus.interpolation.MapBasedValueSource;
+import org.codehaus.plexus.interpolation.StringSearchInterpolator;
 
 import java.io.File;
 import java.io.IOException;
@@ -766,13 +768,42 @@ public class DefaultModelBuilder
         // save profile activations before interpolation, since they are evaluated with limited scope
         Map<String, Activation> originalActivations = getProfileActivations( model, true );
 
-        Model result = modelInterpolator.interpolateModel( model, model.getProjectDirectory(), request, problems );
-        result.setPomFile( model.getPomFile() );
+        Model interpolatedModel =
+            modelInterpolator.interpolateModel( model, model.getProjectDirectory(), request, problems );
+        if ( interpolatedModel.getParent() != null )
+        {
+            // MNG-6090 interpolate parent version for ${sha1}, ${revision} or ${changelist}
+            try
+            {
+                String parentVersion = interpolatedModel.getParent().getVersion();
+
+                StringSearchInterpolator ssi = new StringSearchInterpolator();
+                ssi.addValueSource( new MapBasedValueSource( request.getUserProperties() ) );
+                ssi.addValueSource( new MapBasedValueSource( model.getProperties() ) );
+                ssi.addValueSource( new MapBasedValueSource( request.getSystemProperties() ) );
+
+                String interpolatedParentVersion = ssi.interpolate( parentVersion );
+
+                interpolatedModel.getParent().setVersion( interpolatedParentVersion );
+            }
+            catch ( Exception e )
+            {
+                ModelProblemCollectorRequest mpcr =
+                    new ModelProblemCollectorRequest( Severity.ERROR,
+                                                      Version.BASE ).setMessage( "Failed to interpolate field: "
+                                                          + interpolatedModel.getParent().getVersion()
+                                                          + " on class: " ).setException( e );
+                problems.add( mpcr );
+            }
+
+            
+        }
+        interpolatedModel.setPomFile( model.getPomFile() );
 
         // restore profiles with file activation to their value before full interpolation
         injectProfileActivations( model, originalActivations );
 
-        return result;
+        return interpolatedModel;
     }
 
     private ModelData readParent( Model childModel, ModelSource childSource, ModelBuildingRequest request,
